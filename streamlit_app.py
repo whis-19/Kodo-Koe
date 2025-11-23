@@ -143,7 +143,7 @@ st.sidebar.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
 st.sidebar.header("⚙️ Settings")
 
 # Check for Gemini API key from environment
-gemini_api_key = os.getenv("AIzaSyD2rGJH45BiVy8VKiJM1Ai9xi0fau1WIy8")
+gemini_api_key = os.getenv("GEMINI_API_KEY")
 
 # Show API status
 if gemini_api_key:
