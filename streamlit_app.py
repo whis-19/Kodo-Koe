@@ -143,7 +143,7 @@ st.sidebar.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
 st.sidebar.header("⚙️ Settings")
 
 # Check for Gemini API key from environment
-gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_api_key = os.getenv("AIzaSyD2rGJH45BiVy8VKiJM1Ai9xi0fau1WIy8")
 
 # Show API status
 if gemini_api_key:
@@ -231,6 +231,10 @@ for i in range(5):
             st.session_state.code_to_use = st.session_state.example_code
     
     st.markdown('</div>', unsafe_allow_html=True)
+
+# Initialize code_input if not defined
+if 'code_input' not in locals():
+    code_input = ""
 
 # Use example code if selected
 if 'code_to_use' in st.session_state:
