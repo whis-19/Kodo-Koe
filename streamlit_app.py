@@ -165,15 +165,30 @@ def load_config():
 
 config = load_config()
 
-# Get Gemini API key from config or environment
+# Get Gemini API key from config, environment, or user input
 api_config = config.get("api", {})
 gemini_api_key = api_config.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
+
+# Allow user to input API key if not available
+if not gemini_api_key:
+    st.sidebar.markdown("### 🔑 API Key Setup")
+    user_api_key = st.sidebar.text_input(
+        "Enter Gemini API Key:",
+        type="password",
+        help="Get your key from: https://makersuite.google.com/app/apikey",
+        placeholder="your_gemini_api_key_here"
+    )
+    
+    if user_api_key:
+        gemini_api_key = user_api_key
+        st.sidebar.success("🤖 API key provided!")
 
 # Show API status
 if gemini_api_key:
     st.sidebar.success("🤖 Gemini API configured")
 else:
     st.sidebar.info("🔧 Using rule-based analysis (no API key)")
+    st.sidebar.warning("⚠️ For better documentation, add an API key above")
 
 st.sidebar.markdown("---")
 
