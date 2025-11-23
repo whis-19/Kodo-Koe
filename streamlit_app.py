@@ -1,11 +1,9 @@
 import streamlit as st
-import requests
-import io
-import wave
 import sys
 import os
 import toml
 from pathlib import Path
+import gc
 
 # Add backend directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
@@ -13,13 +11,27 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 from services import tts, code_processor
 from models import CodeRequest
 
-# Configure Streamlit page
+# Configure Streamlit page with memory optimization
 st.set_page_config(
     page_title="Code to Audio System",
     page_icon="🔊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Memory optimization: Configure Streamlit cache
+@st.cache_data(max_entries=10, ttl=300)  # Limit cache entries and set TTL
+def cached_generate_documentation(code):
+    """Cache documentation generation to reduce memory usage"""
+    return code_processor.generate_documentation(code)
+
+@st.cache_data(max_entries=5, ttl=600)  # Less cache for audio (heavier)
+def cached_generate_audio(summary, model):
+    """Cache audio generation with strict limits"""
+    return tts.stream_tts_audio_sync(summary, model)
+
+# Memory optimization: Clear unused imports
+gc.collect()
 
 # Custom CSS for better UI
 st.markdown("""
@@ -174,9 +186,28 @@ st.sidebar.info("🎯 **Tacotron2-DDC**: High-quality TTS by Coqui")
 tts_config = config.get("tts", {})
 model_id = tts_config.get("model", "tts_models/en/ljspeech/tacotron2-DDC")
 
-# Quick stats in sidebar
+# Memory optimization: Clear large session state data periodically
+def cleanup_session_state():
+    """Clean up session state to free memory"""
+    keys_to_check = ['audio_data', 'documentation', 'summary']
+    for key in keys_to_check:
+        if key in st.session_state and st.session_state[key]:
+            # Clear large data objects
+            st.session_state[key] = None
+    gc.collect()
+
+# Sidebar memory management
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📊 Quick Stats")
+st.sidebar.markdown("### 🧹 Memory Management")
+if st.sidebar.button("�️ Clear Memory", help="Clear all cached data to free memory"):
+    cleanup_session_state()
+    # Clear all results
+    keys_to_clear = ['results_generated', 'documentation', 'summary', 'audio_data', 'last_code', 'error', 'generate_triggered']
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.sidebar.success("✅ Memory cleared!")
+    st.rerun()
 
 if 'results_generated' in st.session_state:
     doc_length = len(st.session_state.get('documentation', ''))
@@ -263,17 +294,19 @@ if 'generate_triggered' in st.session_state or ('results_generated' in st.sessio
         # Show loading
         with st.spinner("🔄 Generating documentation and audio..."):
             try:
-                # Generate documentation
-                doc_result = code_processor.generate_documentation(code_input)
+                # Generate documentation and audio (using cached versions)
+                doc_result = cached_generate_documentation(code_input)
+                audio_data = cached_generate_audio(doc_result["summary"], model_id)
                 
-                # Generate audio (using sync version for Streamlit)
-                audio_data = tts.stream_tts_audio_sync(doc_result["summary"], model_id)
-                
-                # Store results in session state
+                # Store results in session state with memory optimization
                 st.session_state.results_generated = True
                 st.session_state.documentation = doc_result["documentation"]
                 st.session_state.summary = doc_result["summary"]
-                st.session_state.audio_data = audio_data
+                # Limit audio data size to prevent memory issues
+                if len(audio_data) > 5 * 1024 * 1024:  # 5MB limit
+                    st.session_state.audio_data = audio_data[:5 * 1024 * 1024]
+                else:
+                    st.session_state.audio_data = audio_data
                 st.session_state.last_code = code_input
                 
                 # Clear any previous errors and triggers
@@ -281,6 +314,9 @@ if 'generate_triggered' in st.session_state or ('results_generated' in st.sessio
                     del st.session_state.error
                 if 'generate_triggered' in st.session_state:
                     del st.session_state.generate_triggered
+                
+                # Force garbage collection
+                gc.collect()
                     
             except Exception as e:
                 st.session_state.error = str(e)
