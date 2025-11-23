@@ -8,13 +8,10 @@ pytest
 pytest-asyncio
 httpx
 streamlit
-
-# Open-source model dependencies (optional but recommended):
-transformers
+google-generativeai
+TTS
+pydub
 torch
 numpy
 scipy
-
-# High-quality local TTS (optional):
-# TTS   # Coqui TTS for XTTS
-# pyttsx3  # System TTS fallback
+soundfile

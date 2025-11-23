@@ -2,15 +2,64 @@ from typing import Dict, Any
 import os
 import re
 from fastapi import HTTPException
+import google.generativeai as genai
 
 def generate_documentation(code: str) -> Dict[str, str]:
-    """Generate documentation and summary using local open-source models."""
+    """Generate documentation and summary using Gemini API."""
     
-    # Try to use local T5/FLAN-T5 if available
+    # Get Gemini API key
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("Gemini API key not found, using rule-based approach")
+        return generate_documentation_rule_based(code)
+    
     try:
-        return generate_documentation_with_local_model(code)
-    except Exception:
-        # Fallback to rule-based if models fail
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Generate documentation
+        documentation_prompt = f"""
+        Analyze the following Python code and generate comprehensive documentation:
+
+        Code:
+        ```python
+        {code}
+        ```
+
+        Please provide:
+        1. Overview of what the code does
+        2. Function descriptions with parameters and return values
+        3. Class descriptions with attributes and methods
+        4. Important patterns or algorithms used
+        5. Dependencies and imports explained
+
+        Format the response in a clear, structured way.
+        """
+        
+        doc_response = model.generate_content(documentation_prompt)
+        documentation = doc_response.text
+        
+        # Generate summary of the documentation
+        summary_prompt = f"""
+        Based on this documentation, provide a concise 2-3 sentence summary that would be suitable for text-to-speech:
+
+        Documentation:
+        {documentation}
+
+        Summary:
+        """
+        
+        summary_response = model.generate_content(summary_prompt)
+        summary = summary_response.text
+        
+        return {
+            "documentation": documentation.strip(),
+            "summary": summary.strip()
+        }
+        
+    except Exception as e:
+        print(f"Gemini API error: {e}, falling back to rule-based approach")
         return generate_documentation_rule_based(code)
 
 def generate_documentation_rule_based(code: str) -> Dict[str, str]:

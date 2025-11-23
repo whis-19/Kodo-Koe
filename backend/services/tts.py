@@ -2,318 +2,150 @@ import os
 import io
 import wave
 import struct
-import tempfile
 import math
 import asyncio
 from typing import AsyncGenerator
 from fastapi import HTTPException
+import warnings
+from TTS.api import TTS
+from pydub import AudioSegment
+from pathlib import Path
+import torch
 
-def stream_tts_audio_sync(text: str, model_id: str = "local") -> bytes:
-    """Synchronous version of TTS audio generation for Streamlit."""
-    # Run the async version in an event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        # Collect all chunks from async generator
-        audio_data = b''
-        async def collect_chunks():
-            data = b''
-            async for chunk in stream_tts_audio(text, model_id):
-                data += chunk
-            return data
-        
-        audio_data = loop.run_until_complete(collect_chunks())
-        return audio_data
-    finally:
-        loop.close()
+# Suppress all warnings
+warnings.filterwarnings("ignore")
 
-async def stream_tts_audio(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio using local open-source models."""
-    
-    # Try different TTS methods in order of preference
-    try:
-        # 1. Try XTTS (high quality local TTS)
-        async for chunk in stream_tts_xtts(text, model_id):
-            yield chunk
-        return
-    except Exception as e:
-        print(f"XTTS failed: {e}")
-    
-    try:
-        # 2. Try pyttsx3 (system TTS)
-        async for chunk in stream_tts_pyttsx3(text, model_id):
-            yield chunk
-        return
-    except Exception as e:
-        print(f"pyttsx3 failed: {e}")
-    
-    try:
-        # 3. Try basic speech synthesis
-        async for chunk in stream_tts_basic(text, model_id):
-            yield chunk
-        return
-    except Exception as e:
-        print(f"Basic TTS failed: {e}")
-    
-    # 4. Fallback to simple tone generation
-    try:
-        async for chunk in stream_tts_simple(text, model_id):
-            yield chunk
-        return
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"All TTS methods failed: {str(e)}")
+# Define valid vocabulary (alphanumeric + basic punctuation)
+VALID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,?!")
 
-async def stream_tts_xtts(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio using XTTS (Coqui) - high quality local TTS."""
-    try:
-        from TTS.api import TTS
-        import torch
-        
-        # Check if CUDA is available for faster processing
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # Try different XTTS models
-        models_to_try = [
-            "tts_models/multilingual/multi-dataset/xtts_v2",  # Best multilingual
-            "tts_models/en/ljspeech/tacotron2-DDC",  # English only
-            "tts_models/en/ljspeech/fast_pitch",  # Fast
-        ]
-        
-        for model_name in models_to_try:
-            try:
-                print(f"Loading {model_name}...")
-                tts = TTS(model_name=model_name).to(device)
-                
-                # Generate speech to temporary file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                    temp_path = temp_file.name
-                
-                # XTTS works better with longer text
-                if len(text) < 10:
-                    text = text + ". "  # Add punctuation for better prosody
-                
-                tts.tts_to_file(text=text, speaker=tts.speakers[0] if hasattr(tts, 'speakers') else None, 
-                             language="en", file_path=temp_path)
-                
-                # Read the file and yield in chunks
-                with open(temp_path, 'rb') as f:
-                    while True:
-                        chunk = f.read(1024)
-                        if not chunk:
-                            break
-                        yield chunk
-                
-                # Clean up
-                os.unlink(temp_path)
-                return
-                
-            except Exception as e:
-                print(f"Failed to load {model_name}: {e}")
-                continue
-        
-        raise Exception("All XTTS models failed")
-        
-    except ImportError:
-        raise Exception("TTS/Coqui not installed")
-    except Exception as e:
-        raise Exception(f"XTTS error: {e}")
+# Set device (GPU if available, else CPU)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-async def stream_tts_pyttsx3(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio using pyttsx3 (system TTS)."""
+# Clean text by replacing invalid characters with spaces
+def clean_text(text):
+    return ''.join(c if c in VALID_CHARS else ' ' for c in text)
+
+# Split text into chunks for TTS processing
+def split_text(text, max_length=1000):
+    words = text.split()
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for word in words:
+        if current_length + len(word) + 1 <= max_length:
+            current_chunk.append(word)
+            current_length += len(word) + 1
+        else:
+            chunks.append(" ".join(current_chunk))
+            current_chunk = [word]
+            current_length = len(word) + 1
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    
+    return chunks
+
+# Convert text to intermediate audio
+def text_to_intermediate_audio(text, temp_output_base="temp_audio", output_dir="temp"):
+    """Convert text to audio using TTS model."""
     try:
-        import pyttsx3
+        os.makedirs(output_dir, exist_ok=True)
+        tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=(device == "cuda"))
+        chunks = split_text(text)
+        temp_files = []
         
-        # Initialize TTS engine
-        engine = pyttsx3.init()
+        for i, chunk in enumerate(chunks):
+            temp_file = f"{output_dir}/{temp_output_base}_{i}.wav"
+            tts.tts_to_file(text=chunk, file_path=temp_file)
+            temp_files.append(temp_file)
         
-        # Create temporary file for audio
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_path = temp_file.name
+        # Combine audio chunks
+        combined = AudioSegment.empty()
+        for temp_file in temp_files:
+            combined += AudioSegment.from_file(temp_file)
+            os.remove(temp_file)
         
-        # Save speech to file
-        engine.save_to_file(text, temp_path)
-        engine.runAndWait()
+        combined_output = f"{output_dir}/{temp_output_base}.wav"
+        combined.export(combined_output, format="wav")
         
-        # Read the file and yield in chunks
-        with open(temp_path, 'rb') as f:
-            while True:
-                chunk = f.read(1024)
-                if not chunk:
-                    break
-                yield chunk
+        # Read the final audio file and return bytes
+        with open(combined_output, 'rb') as f:
+            audio_bytes = f.read()
         
         # Clean up
-        os.unlink(temp_path)
+        os.remove(combined_output)
+        if os.path.exists(output_dir) and not os.listdir(output_dir):
+            os.rmdir(output_dir)
         
-    except ImportError:
-        raise Exception("pyttsx3 not installed")
+        return audio_bytes
+        
     except Exception as e:
-        raise Exception(f"pyttsx3 error: {e}")
+        print(f"TTS error: {e}")
+        # Fallback to simple tone generation
+        return generate_simple_audio(text)
 
-async def stream_tts_basic(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio using basic speech synthesis."""
+def generate_simple_audio(text: str) -> bytes:
+    """Generate simple audio as fallback."""
     try:
-        import numpy as np
-        from scipy.io import wavfile
+        # Create a simple mono WAV file
+        sample_rate = 22050  # Hz
+        duration = min(len(text) * 0.1, 5.0)  # 0.1 seconds per character, max 5 seconds
         
-        # Generate basic speech-like audio
-        sample_rate = 22050
-        duration = min(len(text) * 0.1, 5.0)
-        
-        # Create time array
-        t = np.linspace(0, duration, int(sample_rate * duration))
-        
-        # Generate carrier frequency (modulated by text)
-        carrier_freq = 200  # Base frequency
-        
-        # Create amplitude envelope based on text
-        audio = np.zeros_like(t)
-        
+        # Generate a simple tone pattern based on text
+        audio_samples = []
         for i, char in enumerate(text):
             if char == ' ':
                 # Silence for spaces
-                amplitude = 0
+                freq = 0
             else:
-                # Different amplitude for different characters
-                amplitude = 0.3 + 0.2 * (ord(char.lower()) % 10) / 10
+                # Different frequency for different characters
+                char_code = ord(char.lower()) % 26 + 1  # A-Z mapped to 1-26
+                freq = 200 + (char_code * 20)  # 200-720 Hz range
             
-            # Time window for this character
-            char_start = i * len(t) // len(text)
-            char_end = (i + 1) * len(t) // len(text)
-            char_end = min(char_end, len(t))
+            # Generate samples for this character
+            char_duration = 0.1  # 100ms per character
+            char_samples = int(sample_rate * char_duration)
             
-            # Apply amplitude with some modulation
-            char_t = t[char_start:char_end]
-            if len(char_t) > 0:
-                # Add some frequency modulation for more natural sound
-                freq_mod = carrier_freq * (1 + 0.1 * np.sin(2 * np.pi * 5 * char_t))
-                audio[char_start:char_end] = amplitude * np.sin(2 * np.pi * freq_mod * char_t)
+            for j in range(char_samples):
+                if freq == 0:
+                    # Silence
+                    sample = 0
+                else:
+                    # Simple sine wave
+                    t = j / sample_rate
+                    sample = int(32767 * 0.3 * math.sin(2 * math.pi * freq * t))
+                audio_samples.append(sample)
         
-        # Apply envelope for smoother start/stop
-        envelope = np.ones_like(audio)
-        fade_samples = int(0.1 * sample_rate)  # 100ms fade
-        envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
-        envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
-        audio *= envelope
+        # Convert to WAV format
+        wav_buffer = io.BytesIO()
         
-        # Normalize
-        audio = audio / np.max(np.abs(audio)) * 0.8
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(sample_rate)
+            
+            # Pack samples into bytes
+            packed_samples = struct.pack('<' + 'h' * len(audio_samples), *audio_samples)
+            wav_file.writeframes(packed_samples)
         
-        # Convert to 16-bit integers
-        audio_int16 = (audio * 32767).astype(np.int16)
+        wav_buffer.seek(0)
+        return wav_buffer.getvalue()
         
-        # Write to temporary WAV file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_path = temp_file.name
-        
-        wavfile.write(temp_path, sample_rate, audio_int16)
-        
-        # Read the file and yield in chunks
-        with open(temp_path, 'rb') as f:
-            while True:
-                chunk = f.read(1024)
-                if not chunk:
-                    break
-                yield chunk
-        
-        # Clean up
-        os.unlink(temp_path)
-        
-    except ImportError:
-        raise Exception("numpy/scipy not installed")
     except Exception as e:
-        raise Exception(f"Basic TTS error: {e}")
+        print(f"Simple audio generation failed: {e}")
+        return b""
 
-async def stream_tts_simple(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio using simple tone generation (ultimate fallback)."""
+def stream_tts_audio_sync(text: str, model_id: str = "local") -> bytes:
+    """Synchronous version of TTS audio generation for Streamlit."""
+    # Clean the text first
+    cleaned_text = clean_text(text)
     
-    # Create a simple mono WAV file
-    sample_rate = 22050  # Hz
-    duration = min(len(text) * 0.1, 5.0)  # 0.1 seconds per character, max 5 seconds
+    # Use the intermediate audio function
+    audio_bytes = text_to_intermediate_audio(cleaned_text)
     
-    # Generate a simple tone pattern based on text
-    audio_samples = []
-    for i, char in enumerate(text):
-        if char == ' ':
-            # Silence for spaces
-            freq = 0
-        else:
-            # Different frequency for different characters
-            char_code = ord(char.lower()) % 26 + 1  # A-Z mapped to 1-26
-            freq = 200 + (char_code * 20)  # 200-720 Hz range
-        
-        # Generate samples for this character
-        char_duration = 0.1  # 100ms per character
-        char_samples = int(sample_rate * char_duration)
-        
-        for j in range(char_samples):
-            if freq == 0:
-                # Silence
-                sample = 0
-            else:
-                # Simple sine wave with some modulation
-                t = j / sample_rate
-                sample = int(32767 * 0.3 * (1 + 0.5 * (i % 3)) * 
-                           (0.5 + 0.5 * (j % 1000) / 1000) *  # Fade in/out
-                           math.sin(2 * math.pi * freq * t))  # Use math for sine
-            audio_samples.append(sample)
-    
-    # Convert to WAV format
-    wav_buffer = io.BytesIO()
-    
-    with wave.open(wav_buffer, 'wb') as wav_file:
-        wav_file.setnchannels(1)  # Mono
-        wav_file.setsampwidth(2)  # 16-bit
-        wav_file.setframerate(sample_rate)
-        
-        # Pack samples into bytes
-        packed_samples = struct.pack('<' + 'h' * len(audio_samples), *audio_samples)
-        wav_file.writeframes(packed_samples)
-    
-    wav_buffer.seek(0)
-    audio_data = wav_buffer.getvalue()
-    
-    # Yield the audio data in chunks
-    chunk_size = 1024
-    for i in range(0, len(audio_data), chunk_size):
-        yield audio_data[i:i + chunk_size]
+    return audio_bytes
 
-# Fallback: Use Hugging Face API if token is available
-async def stream_tts_audio_huggingface(text: str, model_id: str = "facebook/fastspeech2-en-ljspeech") -> AsyncGenerator[bytes, None]:
-    """Stream TTS audio from Hugging Face Inference API (if token available)."""
-    api_token = os.getenv("HUGGINGFACE_API_TOKEN")
-    if not api_token:
-        # No token, fallback to local
-        async for chunk in stream_tts_audio(text, model_id):
-            yield chunk
-        return
-    
-    try:
-        import requests
-        
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
-        
-        with requests.post(
-            f"https://api-inference.huggingface.co/models/{model_id}",
-            headers=headers,
-            json={"inputs": text},
-            stream=True
-        ) as response:
-            if response.status_code != 200:
-                # API failed, fallback to local
-                async for chunk in stream_tts_audio(text, model_id):
-                    yield chunk
-                return
-            
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    yield chunk
-                    
-    except Exception:
-        # Any error, fallback to local
-        async for chunk in stream_tts_audio(text, model_id):
-            yield chunk
+async def stream_tts_audio(text: str, model_id: str = "local") -> AsyncGenerator[bytes, None]:
+    """Stream TTS audio using TTS model."""
+    audio_bytes = stream_tts_audio_sync(text, model_id)
+    yield audio_bytes
