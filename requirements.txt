@@ -15,3 +15,13 @@ torch
 numpy
 scipy
 soundfile
+pdfplumber 
+pytesseract 
+pdf2image  
+TTS
+pydub
+tqdm
+streamlit
+torch
+soundfile
+Pillow
