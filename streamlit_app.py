@@ -4,6 +4,8 @@ import io
 import wave
 import sys
 import os
+import toml
+from pathlib import Path
 
 # Add backend directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
@@ -142,8 +144,18 @@ st.markdown("""
 st.sidebar.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
 st.sidebar.header("⚙️ Settings")
 
-# Check for Gemini API key from environment
-gemini_api_key = os.getenv("GEMINI_API_KEY")
+# Load configuration from TOML
+def load_config():
+    config_path = Path(__file__).parent / ".env.toml"
+    if config_path.exists():
+        return toml.load(config_path)
+    return {}
+
+config = load_config()
+
+# Get Gemini API key from config or environment
+api_config = config.get("api", {})
+gemini_api_key = api_config.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
 
 # Show API status
 if gemini_api_key:
@@ -158,7 +170,9 @@ st.sidebar.markdown("### 🔊 TTS Model")
 st.sidebar.info("🎯 **Tacotron2-DDC**: High-quality TTS by Coqui")
 
 # Get the model ID (fixed to use our TTS model)
-model_id = "tts_models/en/ljspeech/tacotron2-DDC"
+# Get TTS model from config or use default
+tts_config = config.get("tts", {})
+model_id = tts_config.get("model", "tts_models/en/ljspeech/tacotron2-DDC")
 
 # Quick stats in sidebar
 st.sidebar.markdown("---")
